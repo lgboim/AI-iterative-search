@@ -8,30 +8,6 @@ import re
 import streamlit as st
 from duckduckgo_search import AsyncDDGS
 
-def load_memory():
-    try:
-        with open("memory.json", "r") as file:
-            try:
-                return json.load(file)
-            except json.JSONDecodeError:
-                return []
-    except FileNotFoundError:
-        return []
-
-def save_memory(query, summary, urls):
-    try:
-        memory = load_memory()
-        new_entry = {
-            'query': query,
-            'summary': summary,
-            'urls': urls
-        }
-        memory.append(new_entry)
-        with open("memory.json", "w") as file:
-            json.dump(memory, file)
-    except Exception as e:
-        print(f"Error during saving memory: {e}")
-
 async def perform_search(query):
     try:
         search_results = await AsyncDDGS(proxy=None).text(query, max_results=10)
@@ -202,9 +178,7 @@ async def main():
             progress_text.text(f"Found {len(relevant_results)} relevant search results.")
 
             content_tasks = []
-            urls = []
             for result in relevant_results:
-                urls.append(result)
                 content_tasks.append(scrape_website_content(result))
 
             scraped_contents = await asyncio.gather(*content_tasks)
@@ -231,7 +205,6 @@ async def main():
         if iteration_summaries:
             final_summary = generate_final_summary(iteration_summaries, topic, api_key)
             final_summary_text.text(f"Final AI-generated summary:\n{final_summary}")
-            save_memory(topic, final_summary, urls)
         else:
             final_summary_text.text("Failed to generate a final summary.")
 
