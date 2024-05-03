@@ -61,8 +61,6 @@ streamlit run sear.py
 
 7. The application will display the progress, AI-generated search queries, relevant search results, and the final comprehensive summary.
 
-8. The search and summary history will be saved in a `memory.json` file for future reference.
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
