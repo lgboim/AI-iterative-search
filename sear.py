@@ -6,13 +6,13 @@ from bs4 import BeautifulSoup
 import anthropic
 import re
 import streamlit as st
-from duckduckgo_search import AsyncDDGS
 import chardet
 import ssl
-#import logging
+import logging
+from tavily import TavilyClient
 
 # Configure logging
-#logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 st.set_option('client.showErrorDetails', True)
 
@@ -32,7 +32,7 @@ def save_memory(query, summary, urls):
         new_entry = {
             'query': query,
             'summary': summary,
-            'urls': urls
+            'urls': urls,
         }
         memory.append(new_entry)
         with open("memory.json", "w") as file:
@@ -40,14 +40,30 @@ def save_memory(query, summary, urls):
     except Exception as e:
         print(f"Error during saving memory: {e}")
 
-async def perform_search(query):
+async def perform_search(query, api_key):
+    client = TavilyClient(api_key=api_key)
     try:
-        search_results = await AsyncDDGS(proxy=None).text(query, max_results=10)
-        #logging.info(f"Search results for query '{query}': {search_results}")
-        return search_results
+        # Get the current event loop
+        loop = asyncio.get_event_loop()
+
+        # Execute the search asynchronously using run_in_executor
+        search_results = await loop.run_in_executor(None, lambda: client.search(query, include_images=True))
+
+        if search_results and 'results' in search_results:
+            results = [{
+                'title': result.get('title', ''),
+                'body': result.get('content', ''),
+                'href': result.get('url', '')
+            } for result in search_results['results']]
+            
+            image_urls = search_results.get('images', [])
+            
+            return results, image_urls
+        else:
+            return [], []
     except Exception as e:
-        #logging.exception(f"Exception occurred during search: {e}")
-        return []
+        logging.exception(f"Exception occurred during Tavily search: {e}")
+        return [], []
 
 async def scrape_website_content(session, url):
     headers = {
@@ -66,22 +82,22 @@ async def scrape_website_content(session, url):
                 soup = BeautifulSoup(html, 'html.parser')
                 paragraphs = soup.find_all('p')
                 text = ' '.join([para.get_text(strip=True) for para in paragraphs])
-                #logging.info(f"Scraped content from URL '{url}': {text[:100]}...")
+                logging.info(f"Scraped content from URL '{url}': {text[:100]}...")
                 return text[:4000]
             else:
-                #logging.warning(f"Unable to fetch content from URL '{url}' due to non-200 status code.")
+                logging.warning(f"Unable to fetch content from URL '{url}' due to non-200 status code.")
                 return "Unable to fetch content due to non-200 status code."
     except aiohttp.ClientError as e:
-        #logging.exception(f"Error during scraping: {e}")
+        logging.exception(f"Error during scraping: {e}")
         return f"Error during scraping: {e}"
     except asyncio.TimeoutError:
-        #logging.warning(f"Timeout occurred while scraping URL: {url}")
+        logging.warning(f"Timeout occurred while scraping URL: {url}")
         return f"Timeout occurred while scraping URL: {url}"
     except UnicodeDecodeError as e:
-        #logging.exception(f"Error during decoding: {e}")
+        logging.exception(f"Error during decoding: {e}")
         return f"Error during decoding: {e}"
     except Exception as e:
-        #logging.exception(f"Error during scraping: {e}")
+        logging.exception(f"Error during scraping: {e}")
         return f"Error during scraping: {e}"
 
 
@@ -92,7 +108,7 @@ def summarize_with_ai(content, query, api_key):
         max_tokens=3000,
         temperature=0.7,
         messages=[
-            {"role": "user", "content": f"Please summarize the following content, super detailed, insightfull and structured. focusing on answering the question: '{query}'. Content: {content}"}
+            {"role": "user", "content": f"Please summarize the following content, super detailed, insightful and structured. focusing on answering the question: '{query}'. Content: {content}"}
         ]
     )
 
@@ -113,7 +129,7 @@ def generate_follow_up_query(summary, topic, api_key):
         max_tokens=100,
         temperature=0.7,
         messages=[
-            {"role": "user", "content": f"Based on the following summary:\n{summary}\n\nIdentify the missing or insufficient information related to the topic '{topic}'. Generate a follow-up search query to find more information on those specific aspects. Think about search terms that will give you as much relevant information as possible. Try to get to the root of things. Enclose the search query in double quotes."}
+            {"role": "user", "content": f"Based on the following summary:\n{summary}\n\nGenerate a follow-up search query to further explore the topic '{topic}'. Find things it didn't touch on or didn't give enough accurate information. Think about search terms that will give you as much information as possible about it, not necessarily what the user wrote. Try to get to the root of things. Enclose the search query in double quotes."}
         ]
     )
 
@@ -148,27 +164,6 @@ def generate_search_query(topic, attempt, api_key):
     else:
         return topic
         
-def generate_follow_up_query(summary, topic, api_key):
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-3-opus-20240229",
-        max_tokens=100,
-        temperature=0.7,
-        messages=[
-            {"role": "user", "content": f"Based on the following summary:\n{summary}\n\nGenerate a follow-up search query to further explore the topic '{topic}'. find things it didn't touch on or didn't give enough accurate information. Think about search terms that will give you as much information as possible about it, not necessarily what the user wrote. Try to get to the root of things. Enclose the search query in double quotes."}
-        ]
-    )
-
-    if response.content:
-        content = str(response.content)
-        search_query = re.findall(r'"(.*?)"', content)
-        if search_query:
-            return search_query[0]
-        else:
-            return topic
-    else:
-        return topic
-
 def generate_final_summary(iteration_summaries, topic, api_key):
     client = anthropic.Anthropic(api_key=api_key)
     combined_summaries = "\n".join(iteration_summaries)
@@ -221,9 +216,9 @@ def assess_relevance(search_results, topic, api_key):
 
     return relevant_results
 
-async def process_iteration(iteration, topic, api_key, session, progress_text, num_iterations, iteration_summaries):
+async def process_iteration(iteration, topic, api_key, tavily_api_key, session, progress_text, num_iterations, iteration_summaries):
     if iteration == 0:
-        search_query = topic
+        search_query = generate_search_query(topic, 1, api_key)
     else:
         if iteration_summaries:
             progress_text.text(f"🔍 Generating follow-up query for iteration {iteration + 1}...")
@@ -231,17 +226,17 @@ async def process_iteration(iteration, topic, api_key, session, progress_text, n
             progress_text.text(f"🤖 AI-generated follow-up query for iteration {iteration + 1}: {search_query}")
         else:
             progress_text.text(f"❌ No summary available from previous iteration. Using the original topic as the search query.")
-            search_query = topic
+            search_query = generate_search_query(topic, iteration + 1, api_key)
 
     progress_text.text(f"🌐 Performing search: {search_query}")
-    search_results = await perform_search(search_query)
+    search_results, image_urls = await perform_search(search_query, tavily_api_key)
 
     progress_text.text(f"🧐 Assessing relevance of search results...")
     relevant_results = assess_relevance(search_results, topic, api_key)
 
     if not relevant_results:
         progress_text.text("😕 No relevant search results found. Trying again with a different query.")
-        return None
+        return None, []
 
     progress_text.text(f"✅ Found {len(relevant_results)} relevant search results.")
 
@@ -264,58 +259,63 @@ async def process_iteration(iteration, topic, api_key, session, progress_text, n
     else:
         progress_text.text("❌ Failed to scrape content from the relevant pages for this iteration.")
 
-    return iteration_summary
+    return iteration_summary, image_urls
 
 async def main():
-    st.title("AI-powered Search and Summarization")
+    st.set_page_config(page_title="AI-powered Search and Summarization", layout="wide")
+    
+    with st.sidebar:
+        st.title("Search Settings")
+        anthropic_api_key = st.text_input("Enter your Anthropic API key:")
+        tavily_api_key = st.text_input("Enter your Tavily API key:")
+        topic = st.text_input("Enter a topic to search:")
+        num_iterations = st.number_input("Enter the number of iterations to refine the summary:", min_value=1, value=1, step=1)
+        generate_button = st.button("Generate Summary")
 
-    api_key = st.text_input("Enter your Anthropic API key:")
-    topic = st.text_input("Enter a topic to search:")
-    num_iterations = st.number_input("Enter the number of iterations to refine the summary:", min_value=1, value=1, step=1)
-
-    if st.button("Generate Summary"):
-        if not api_key:
+    if generate_button:
+        if not anthropic_api_key:
             st.error("Please enter your Anthropic API key.")
-            #logging.warning("Anthropic API key not provided.")
+            return
+        if not tavily_api_key:
+            st.error("Please enter your Tavily API key.")
             return
 
         progress_bar = st.progress(0)
         progress_text = st.empty()
-        final_summary_text = st.empty()
-
-        # Generate the initial search query using AI
-        progress_text.text(f"🤖 Generating initial search query...")
-        search_query = generate_search_query(topic, 1, api_key)
-        progress_text.text(f"🔍 AI-generated initial search query: {search_query}")
 
         iteration_summaries = []
+        image_urls_list = []
 
         ssl_context = ssl.create_default_context()
+        
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-            iteration_tasks = []
             for iteration in range(num_iterations):
-                iteration_summary = await process_iteration(iteration, search_query, api_key, session, progress_text, num_iterations, iteration_summaries)
+                iteration_summary, image_urls = await process_iteration(iteration, topic, anthropic_api_key, tavily_api_key, session, progress_text, num_iterations, iteration_summaries)
                 if iteration_summary:
                     iteration_summaries.append(iteration_summary)
+                    image_urls_list.extend(image_urls)
+                    
                 progress_bar.progress((iteration + 1) / num_iterations)
 
-            iteration_results = await asyncio.gather(*iteration_tasks)
+            progress_bar.empty()
+            progress_text.empty()
 
-            for iteration, iteration_summary in enumerate(iteration_results):
-                progress_bar.progress((iteration + 1) / num_iterations)
-                if iteration_summary:
-                    iteration_summaries.append(iteration_summary)
+            col1, col2 = st.columns(2)
 
-        progress_bar.empty()
-        progress_text.empty()
+            with col1:
+                if image_urls_list:
+                    st.image(image_urls_list, use_column_width=True)
+                else:
+                    st.write("No images found.")
 
-        if iteration_summaries:
-            progress_text.text(f"📜 Generating final summary...")
-            final_summary = generate_final_summary(iteration_summaries, topic, api_key)
+            with col2:
+                if iteration_summaries:
+                    progress_text.text(f"📜 Generating final summary...")
+                    final_summary = generate_final_summary(iteration_summaries, topic, anthropic_api_key)
 
-            final_summary_text.text(f"🎉 Final AI-generated summary:\n{final_summary}")
-            save_memory(topic, final_summary, [])
-        else:
-            final_summary_text.text("❌ Failed to generate a final summary.")
+                    st.write(f"🎉 Final AI-generated summary:\n{final_summary}")
+                    save_memory(topic, final_summary, [])
+                else:
+                    st.write("❌ Failed to generate a final summary.")
 if __name__ == "__main__":
     asyncio.run(main())
