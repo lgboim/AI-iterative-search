@@ -9,3 +9,4 @@ Pillow
 requests
 streamlit
 urllib3
+tavily-python
