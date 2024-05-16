@@ -8,5 +8,4 @@ idna
 Pillow
 requests
 streamlit
-tavily
 urllib3
