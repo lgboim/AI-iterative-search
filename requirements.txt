@@ -5,7 +5,7 @@ attrs
 beautifulsoup4
 certifi
 charset-normalizer
-duckduckgo-search
+tavily
 frozenlist
 idna
 multidict
