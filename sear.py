@@ -266,8 +266,8 @@ async def main():
     
     with st.sidebar:
         st.title("Search Settings")
-        anthropic_api_key = st.text_input("Enter your Anthropic API key:")
-        tavily_api_key = st.text_input("Enter your Tavily API key:")
+        anthropic_api_key = st.text_input("Enter your Anthropic API key:", type="password")
+        tavily_api_key = st.text_input("Enter your Tavily API key:", type="password")
         topic = st.text_input("Enter a topic to search:")
         num_iterations = st.number_input("Enter the number of iterations to refine the summary:", min_value=1, value=1, step=1)
         generate_button = st.button("Generate Summary")
